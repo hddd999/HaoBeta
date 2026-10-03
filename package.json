@@ -1,0 +1,11 @@
+{
+  "name": "tang-can",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Theo dõi chế độ ăn tăng cân: thực đơn xoay vòng + nhật ký cân nặng",
+  "scripts": {
+    "dev": "npx --yes serve -l 3000 .",
+    "test": "node --test"
+  }
+}

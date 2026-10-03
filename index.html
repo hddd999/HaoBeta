@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Ăn Tăng Cân</title>
+    <meta name="description" content="Thực đơn tăng cân tự xoay vòng mỗi ngày và nhật ký cân nặng.">
+    <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#141715" media="(prefers-color-scheme: dark)">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍠</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="#today"><span aria-hidden="true">🍠</span> Ăn Tăng Cân</a>
+    </header>
+
+    <main id="view" class="container" aria-live="polite"></main>
+
+    <nav class="tabs" aria-label="Chuyển trang">
+      <a href="#today" data-tab="today"><span aria-hidden="true">🍽️</span>Hôm nay</a>
+      <a href="#week" data-tab="week"><span aria-hidden="true">📅</span>Tuần</a>
+      <a href="#weight" data-tab="weight"><span aria-hidden="true">⚖️</span>Cân nặng</a>
+      <a href="#dishes" data-tab="dishes"><span aria-hidden="true">📖</span>Món ăn</a>
+    </nav>
+
+    <dialog id="swap-dialog"></dialog>
+    <div id="toast" role="status"></div>
+
+    <noscript><p class="container">Trang này cần bật JavaScript.</p></noscript>
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
