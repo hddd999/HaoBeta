@@ -27,6 +27,8 @@ npm test        # kiểm tra thuật toán xoay vòng
 
 Hoặc dùng CLI: `npx vercel` (lần đầu), rồi `npx vercel --prod`.
 
+Cần một file HTML duy nhất (VD để đăng ở nơi chỉ nhận một file)? Chạy `npm run build:single` để có `dist/an-tang-can.html`.
+
 ## Thêm hoặc sửa món
 
 Mở `js/dishes.js` và thêm một object vào `DISHES`:

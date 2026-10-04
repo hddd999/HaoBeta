@@ -1,9 +1,12 @@
 import { SLOTS, POOLS, DISHES, DISH_BY_ID } from './dishes.js';
 import { createPlanner, toKey, fromKey, addDays, dayNumber, cooldownFor } from './rotation.js';
 import { drawWeightChart } from './chart.js';
+import { ICONS } from './icons.js';
 
 // ---------- Lưu trữ (localStorage) ----------
 const STORE_KEY = 'tangcan.v1';
+// Bản gộp một file (đăng trên claude.ai) không cho trang tự tải file xuống.
+const CAN_DOWNLOAD = !globalThis.SINGLE_FILE_BUILD;
 const DEFAULT_STATE = { overrides: {}, eaten: {}, disabled: [], weights: [], goal: null, shop: {} };
 
 function load() {
@@ -22,7 +25,7 @@ function save() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(state));
   } catch {
-    toast('Không lưu được — trình duyệt đang chặn bộ nhớ.');
+    toast('Không lưu được vì trình duyệt đang chặn bộ nhớ.');
   }
 }
 
@@ -76,8 +79,8 @@ function weekStart(key) {
 function dishMeta(dish) {
   const parts = [];
   if (dish.outside) parts.push('<span class="tag tag-out">Ăn ngoài</span>');
-  else parts.push(`<span>⏱ ${dish.minutes} phút</span>`);
-  parts.push(`<span>≈ ${money(dish.cost)}</span>`);
+  else parts.push(`<span class="meta-i">${ICONS.clock}${dish.minutes} phút</span>`);
+  parts.push(`<span class="meta-i">${ICONS.store}≈ ${money(dish.cost)}</span>`);
   return parts.join('');
 }
 
@@ -87,8 +90,8 @@ function recipeHtml(dish) {
     : '';
   const spice = dish.spice.length ? `<p class="spice">Gia vị: ${dish.spice.map(esc).join(', ')}</p>` : '';
   const steps = `<h4>${dish.outside ? 'Ghi chú' : 'Cách làm'}</h4><ol class="steps">${dish.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>`;
-  const tip = dish.tip ? `<p class="tip">💡 ${esc(dish.tip)}</p>` : '';
-  const prep = dish.prep ? `<p class="tip">🕗 ${esc(dish.prep)}</p>` : '';
+  const tip = dish.tip ? `<p class="tip">${ICONS.bulb}<span>${esc(dish.tip)}</span></p>` : '';
+  const prep = dish.prep ? `<p class="tip">${ICONS.moon}<span>${esc(dish.prep)}</span></p>` : '';
   return ing + spice + steps + tip + prep;
 }
 
@@ -97,6 +100,9 @@ const view = document.getElementById('view');
 let selectedDay = todayKey();
 let chartRange = '90';
 let showAllHistory = false;
+let armedDelete = null;
+let backupOpen = false;
+let pendingImport = null;
 const HISTORY_LIMIT = 10;
 
 function currentTab() {
@@ -119,6 +125,16 @@ window.addEventListener('hashchange', () => {
 });
 
 // ---------- Tab: Hôm nay ----------
+function progressRing(done, total) {
+  const r = 34;
+  const c = 2 * Math.PI * r;
+  return `<div class="ring" role="img" aria-label="Đã ăn ${done} trên ${total} bữa">
+    <svg viewBox="0 0 84 84"><circle class="ring-track" cx="42" cy="42" r="${r}"/>
+      <circle class="ring-fill" cx="42" cy="42" r="${r}" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - done / total)}"/></svg>
+    <div class="ring-text"><b>${done}/${total}</b><span>bữa</span></div>
+  </div>`;
+}
+
 function renderToday() {
   const key = selectedDay;
   const isToday = key === todayKey();
@@ -131,64 +147,72 @@ function renderToday() {
     .filter((m) => m.dish?.prep)
     .map((m) => `<li><b>${esc(m.slot.name)}:</b> ${esc(m.dish.prep)}</li>`);
   const uniquePrep = [...new Set(tomorrowPrep)];
+  const cheer =
+    done === meals.length ? 'Đủ 5 bữa rồi. Tuyệt vời!' : done === 0 ? 'Ăn đủ bữa là chìa khoá để tăng cân.' : `Còn ${meals.length - done} bữa nữa thôi.`;
 
   view.innerHTML = `
-    <section class="day-head">
-      <button class="icon-btn" data-act="day" data-delta="-1" aria-label="Ngày trước">‹</button>
-      <div class="day-title">
+    <section class="today-head">
+      <div class="today-title">
+        <p class="eyebrow">${isToday ? 'Hôm nay' : 'Xem ngày'} · ${ddmmyyyy(key)}</p>
         <h1>${WEEKDAYS[fromKey(key).getDay()]}</h1>
-        <p>${ddmmyyyy(key)}${isToday ? ' · Hôm nay' : ` · <button class="link" data-act="go-today">Về hôm nay</button>`}</p>
+        <p class="cheer">${cheer}</p>
+        <div class="day-nav">
+          <button class="icon-btn" data-act="day" data-delta="-1" aria-label="Ngày trước">${ICONS.left}</button>
+          ${isToday ? '' : '<button class="btn ghost small" data-act="go-today">Về hôm nay</button>'}
+          <button class="icon-btn" data-act="day" data-delta="1" aria-label="Ngày sau">${ICONS.right}</button>
+        </div>
       </div>
-      <button class="icon-btn" data-act="day" data-delta="1" aria-label="Ngày sau">›</button>
+      ${progressRing(done, meals.length)}
     </section>
-
-    <div class="card progress-card">
-      <div class="progress-label"><span>Đã ăn <b>${done}/${meals.length}</b> bữa</span>
-        <span class="muted">${done === meals.length ? 'Tuyệt, đủ bữa rồi! 🎉' : 'Ăn đủ bữa là chìa khoá tăng cân'}</span></div>
-      <div class="bar"><span style="width:${(done / meals.length) * 100}%"></span></div>
-    </div>
 
     ${
       !hasWeight && dayNumber(key) <= dayNumber(todayKey())
-        ? `<form class="card quick-weight" data-form="quick-weight">
-            <label for="qw">⚖️ ${isToday ? 'Sáng nay' : 'Hôm đó'} cân bao nhiêu?</label>
-            <div class="row"><input id="qw" name="kg" type="text" inputmode="decimal" autocomplete="off" pattern="[0-9]{2,3}([.,][0-9])?" placeholder="kg" required>
-            <button class="btn">Lưu</button></div>
+        ? `<form class="quick-weight" data-form="quick-weight">
+            <span class="qw-icon">${ICONS.scale}</span>
+            <label for="qw">${isToday ? 'Sáng nay' : 'Hôm đó'} bạn cân bao nhiêu?</label>
+            <div class="qw-input"><input id="qw" name="kg" type="text" inputmode="decimal" autocomplete="off" pattern="[0-9]{2,3}([.,][0-9])?" placeholder="52,4" required><span>kg</span></div>
+            <button class="btn">Lưu</button>
           </form>`
         : ''
     }
 
-    <ol class="meals">
+    <ol class="timeline">
       ${meals.map((m) => mealCard(m, eaten[m.slot.id])).join('')}
     </ol>
 
     ${
       uniquePrep.length
-        ? `<div class="card prep"><h3>🕗 Chuẩn bị cho ngày mai</h3><ul>${uniquePrep.join('')}</ul></div>`
+        ? `<aside class="note prep"><span class="note-icon">${ICONS.moon}</span><div><h3>Chuẩn bị cho ngày mai</h3><ul>${uniquePrep.join('')}</ul></div></aside>`
         : ''
     }
   `;
 }
 
 function mealCard({ slot, dish, swapped }, isEaten) {
-  if (!dish) return `<li class="card meal"><p class="muted">${esc(slot.name)}: chưa có món — bật thêm món trong tab Món ăn.</p></li>`;
+  const rail = `<div class="tl-rail"><span class="tl-time">${slot.time}</span><span class="tl-dot">${isEaten ? ICONS.check : ''}</span></div>`;
+  if (!dish)
+    return `<li class="tl-item slot-${slot.id}">${rail}<article class="meal"><p class="muted">${esc(slot.name)}: chưa có món. Bật thêm món trong tab Món ăn.</p></article></li>`;
   return `
-    <li class="card meal${isEaten ? ' done' : ''}">
-      <div class="meal-top">
-        <span class="slot">${esc(slot.name)} · ${slot.time}</span>
-        <label class="check"><input type="checkbox" data-act="eat" data-slot="${slot.id}" ${isEaten ? 'checked' : ''}><span>Đã ăn</span></label>
-      </div>
-      <div class="meal-main">
-        <span class="emoji" aria-hidden="true">${dish.emoji}</span>
-        <div>
-          <h3>${esc(dish.name)}</h3>
-          <p class="meta">${dishMeta(dish)}${swapped ? '<span class="tag">Đã đổi</span>' : ''}</p>
+    <li class="tl-item slot-${slot.id}${isEaten ? ' done' : ''}">
+      ${rail}
+      <article class="meal">
+        <header class="meal-top">
+          <span class="slot-chip">${esc(slot.name)}</span>
+          <label class="eat-toggle" title="Đánh dấu đã ăn"><input type="checkbox" id="eat-${slot.id}" data-act="eat" data-slot="${slot.id}" ${isEaten ? 'checked' : ''}>
+            <span>${ICONS.check}Đã ăn</span></label>
+        </header>
+        <div class="meal-main">
+          <span class="emoji" aria-hidden="true">${dish.emoji}</span>
+          <div class="meal-name">
+            <h3>${esc(dish.name)}</h3>
+            <p class="meta">${dishMeta(dish)}${swapped ? '<span class="tag">Đã đổi</span>' : ''}</p>
+          </div>
         </div>
-      </div>
-      <div class="meal-actions">
-        <details><summary>${dish.outside ? 'Ghi chú' : 'Cách làm'}</summary><div class="recipe">${recipeHtml(dish)}</div></details>
-        <button class="btn ghost small" data-act="swap" data-slot="${slot.id}">↻ Đổi món</button>
-      </div>
+        <div class="meal-actions">
+          <details><summary>${dish.outside ? 'Ghi chú' : 'Cách làm'}</summary><div class="recipe">${recipeHtml(dish)}</div></details>
+          <button class="btn ghost small" data-act="swap" data-slot="${slot.id}">${ICONS.swap}Đổi món</button>
+        </div>
+      </article>
     </li>`;
 }
 
@@ -219,13 +243,16 @@ function renderWeek() {
   const checked = new Set(state.shop[start] || []);
 
   view.innerHTML = `
-    <section class="day-head">
-      <button class="icon-btn" data-act="week" data-delta="-7" aria-label="Tuần trước">‹</button>
-      <div class="day-title">
+    <section class="page-head">
+      <div>
+        <p class="eyebrow">${days.includes(today) ? 'Tuần này' : 'Tuần khác'} · ${ddmm(start)} – ${ddmm(days[6])}</p>
         <h1>Thực đơn tuần</h1>
-        <p>${ddmm(start)} – ${ddmm(days[6])}${days.includes(today) ? ' · Tuần này' : ` · <button class="link" data-act="go-today">Về tuần này</button>`}</p>
       </div>
-      <button class="icon-btn" data-act="week" data-delta="7" aria-label="Tuần sau">›</button>
+      <div class="day-nav">
+        <button class="icon-btn" data-act="week" data-delta="-7" aria-label="Tuần trước">${ICONS.left}</button>
+        ${days.includes(today) ? '' : '<button class="btn ghost small" data-act="go-today">Về tuần này</button>'}
+        <button class="icon-btn" data-act="week" data-delta="7" aria-label="Tuần sau">${ICONS.right}</button>
+      </div>
     </section>
 
     <div class="week-grid">
@@ -233,12 +260,12 @@ function renderWeek() {
         .map((d) => {
           const eaten = state.eaten[d] || {};
           return `
-          <button class="card week-day${d === today ? ' is-today' : ''}" data-act="open-day" data-day="${d}">
-            <div class="wd-head"><b>${WEEKDAYS_SHORT[fromKey(d).getDay()]}</b> <span>${ddmm(d)}</span></div>
+          <button class="week-day${d === today ? ' is-today' : ''}" data-act="open-day" data-day="${d}">
+            <div class="wd-head"><b>${WEEKDAYS[fromKey(d).getDay()]}</b><span>${ddmm(d)}</span>${d === today ? '<em>Hôm nay</em>' : ''}</div>
             <ul>${mealsFor(d)
               .map(
                 ({ slot, dish }) =>
-                  `<li class="${eaten[slot.id] ? 'done' : ''}"><span class="wd-slot">${slot.short}</span><span class="wd-dish">${dish ? dish.emoji + ' ' + esc(dish.name) : '—'}</span></li>`,
+                  `<li class="slot-${slot.id}${eaten[slot.id] ? ' done' : ''}"><span class="wd-slot">${slot.short}</span><span class="wd-dish">${dish ? esc(dish.name) : '—'}</span></li>`,
               )
               .join('')}</ul>
           </button>`;
@@ -248,7 +275,7 @@ function renderWeek() {
 
     <section class="card shop">
       <div class="shop-head">
-        <h2>🛒 Đi chợ cho tuần này</h2>
+        <h2 class="h-icon">${ICONS.cart}Đi chợ cho tuần này</h2>
         <p class="muted">Chi phí ước tính cả tuần ≈ <b>${money(cost)}</b>${outside ? ` (gồm ${outside} bữa ăn ngoài)` : ''}. Giá chỉ để tham khảo.</p>
       </div>
       <ul class="shop-list">
@@ -260,7 +287,7 @@ function renderWeek() {
           .join('')}
       </ul>
       ${spices.size ? `<p class="spice">Gia vị nên có sẵn: ${[...spices].sort((a, b) => a.localeCompare(b, 'vi')).map(esc).join(', ')}</p>` : ''}
-      <p class="tip">💡 Ức gà mua 1 lần cho cả tuần, chia túi 200g rồi cấp đông — tối hôm trước lấy 1 túi xuống ngăn mát.</p>
+      <p class="tip">${ICONS.bulb}<span>Mua ức gà một lần cho cả tuần, chia túi 200g rồi cấp đông. Tối hôm trước lấy 1 túi xuống ngăn mát.</span></p>
     </section>
   `;
 }
@@ -301,8 +328,8 @@ function renderWeight() {
     if (rate < 0.1)
       advice = `Cân gần như đứng yên (${signed(rate)} kg/tuần). Thử thêm 1 ly sinh tố chuối – bơ đậu phộng mỗi ngày, hoặc ăn thêm nửa chén cơm mỗi bữa chính.`;
     else if (rate > 0.75)
-      advice = `Đang tăng khá nhanh (${signed(rate)} kg/tuần). Mức 0,25–0,5 kg/tuần giúp tăng cơ nhiều hơn tăng mỡ — có thể bớt một chút đồ ngọt.`;
-    else advice = `Đang tăng đều ${signed(rate)} kg/tuần — rất tốt, cứ giữ nhịp này!`;
+      advice = `Đang tăng khá nhanh (${signed(rate)} kg/tuần). Mức 0,25–0,5 kg/tuần giúp tăng cơ nhiều hơn tăng mỡ, bạn có thể bớt chút đồ ngọt.`;
+    else advice = `Đang tăng đều ${signed(rate)} kg/tuần. Rất tốt, cứ giữ nhịp này!`;
   }
 
   let eta = '';
@@ -315,37 +342,38 @@ function renderWeight() {
   const progressPct = goal && first && latest && goal > first.kg ? Math.max(0, Math.min(100, ((latest.kg - first.kg) / (goal - first.kg)) * 100)) : null;
 
   view.innerHTML = `
-    <section class="day-head solo"><div class="day-title"><h1>Cân nặng</h1><p>Cân mỗi sáng, sau khi đi vệ sinh, trước khi ăn.</p></div></section>
+    <section class="page-head"><div><p class="eyebrow">Nhật ký cân nặng</p><h1>Cân nặng</h1><p class="lede">Cân mỗi sáng, sau khi đi vệ sinh và trước khi ăn, để số liệu ổn định.</p></div></section>
 
     <div class="card hero">
       ${
         latest
-          ? `<div class="hero-num"><span class="hero-value">${kg(latest.kg)}</span><span class="hero-unit">kg</span></div>
-             <p class="muted">Lần cân gần nhất: ${ddmmyyyy(latest.date)}</p>
+          ? `<div class="hero-top"><div><p class="eyebrow">Hiện tại</p><div class="hero-num"><span class="hero-value">${kg(latest.kg)}</span><span class="hero-unit">kg</span></div>
+             <p class="muted small">Lần cân gần nhất: ${WEEKDAYS[fromKey(latest.date).getDay()]}, ${ddmmyyyy(latest.date)}</p></div>
+             ${goal ? `<div class="hero-goal">${ICONS.target}<span>Mục tiêu</span><b>${kg(goal)} kg</b></div>` : ''}</div>
              <div class="stats">
                <div class="stat"><span class="stat-label">Từ lúc bắt đầu</span><span class="stat-value">${signed(latest.kg - first.kg)} kg</span><span class="stat-sub">từ ${ddmm(first.date)}</span></div>
                <div class="stat"><span class="stat-label">7 ngày qua</span><span class="stat-value">${sevenAgo ? signed(latest.kg - sevenAgo.kg) + ' kg' : '—'}</span><span class="stat-sub">${sevenAgo ? 'so với ' + ddmm(sevenAgo.date) : 'chưa đủ dữ liệu'}</span></div>
-               <div class="stat"><span class="stat-label">Còn tới mục tiêu</span><span class="stat-value">${goal ? (goal > latest.kg ? kg(goal - latest.kg) + ' kg' : 'Đã đạt 🎉') : '—'}</span><span class="stat-sub">${goal ? 'mục tiêu ' + kg(goal) + ' kg' : 'chưa đặt mục tiêu'}</span></div>
+               <div class="stat"><span class="stat-label">Còn tới mục tiêu</span><span class="stat-value">${goal ? (goal > latest.kg ? kg(goal - latest.kg) + ' kg' : 'Đã đạt!') : '—'}</span><span class="stat-sub">${goal ? 'mục tiêu ' + kg(goal) + ' kg' : 'chưa đặt mục tiêu'}</span></div>
              </div>
-             ${progressPct !== null ? `<div class="bar goal-bar" title="${Math.round(progressPct)}%"><span style="width:${progressPct}%"></span></div><p class="muted small">Đã đi được ${Math.round(progressPct)}% chặng đường</p>` : ''}`
+             ${progressPct !== null ? `<div class="goal-track"><div class="bar goal-bar"><span style="width:${progressPct}%"></span></div><div class="goal-ends"><span>${kg(first.kg)} kg</span><b>${Math.round(progressPct)}% chặng đường</b><span>${kg(goal)} kg</span></div></div>` : ''}`
           : `<p class="empty">Chưa có lần cân nào. Nhập cân nặng đầu tiên bên dưới để bắt đầu theo dõi.</p>`
       }
     </div>
 
-    ${advice || eta ? `<div class="card insight">${advice ? `<p>${advice}</p>` : ''}${eta ? `<p>${eta}</p>` : ''}</div>` : ''}
+    ${advice || eta ? `<aside class="note insight"><span class="note-icon">${ICONS.trend}</span><div>${advice ? `<p>${advice}</p>` : ''}${eta ? `<p>${eta}</p>` : ''}</div></aside>` : ''}
 
     <div class="two-col">
       <form class="card" data-form="weight">
         <h2>Ghi cân nặng</h2>
         <div class="field-row">
-          <label>Ngày<input name="date" type="date" value="${todayKey()}" max="${todayKey()}" required></label>
-          <label>Cân nặng (kg)<input name="kg" type="text" inputmode="decimal" autocomplete="off" pattern="[0-9]{2,3}([.,][0-9])?" required placeholder="VD: 52,4"></label>
+          <label>Ngày<input id="w-date" name="date" type="date" value="${todayKey()}" max="${todayKey()}" required></label>
+          <label>Cân nặng (kg)<input id="w-kg" name="kg" type="text" inputmode="decimal" autocomplete="off" pattern="[0-9]{2,3}([.,][0-9])?" required placeholder="VD: 52,4"></label>
         </div>
         <button class="btn">Lưu</button>
       </form>
       <form class="card" data-form="goal">
         <h2>Mục tiêu</h2>
-        <label>Cân nặng muốn đạt (kg)<input name="goal" type="text" inputmode="decimal" autocomplete="off" pattern="[0-9]{2,3}([.,][0-9])?" value="${goal ?? ''}" placeholder="VD: 60"></label>
+        <label>Cân nặng muốn đạt (kg)<input id="w-goal" name="goal" type="text" inputmode="decimal" autocomplete="off" pattern="[0-9]{2,3}([.,][0-9])?" value="${goal ?? ''}" placeholder="VD: 60"></label>
         <button class="btn ghost">Lưu mục tiêu</button>
       </form>
     </div>
@@ -366,7 +394,7 @@ function renderWeight() {
       <h2>Lịch sử</h2>
       ${
         ws.length
-          ? `<table class="history"><thead><tr><th>Ngày</th><th>Cân nặng</th><th>Thay đổi</th><th></th></tr></thead><tbody>
+          ? `<div class="table-wrap"><table class="history"><thead><tr><th>Ngày</th><th>Cân nặng</th><th>Thay đổi</th><th></th></tr></thead><tbody>
             ${[...ws]
               .reverse()
               .slice(0, showAllHistory ? undefined : HISTORY_LIMIT + 1)
@@ -376,10 +404,12 @@ function renderWeight() {
                 if (i === HISTORY_LIMIT && !showAllHistory) return '';
                 return `<tr><td>${WEEKDAYS_SHORT[fromKey(w.date).getDay()]} ${ddmmyyyy(w.date)}</td><td><b>${kg(w.kg)}</b> kg</td>
                   <td class="${diff > 0 ? 'up' : diff < 0 ? 'down' : ''}">${diff === null ? '' : signed(diff)}</td>
-                  <td><button class="icon-btn small" data-act="del-weight" data-date="${w.date}" aria-label="Xoá ngày ${ddmm(w.date)}">✕</button></td></tr>`;
+                  <td>${armedDelete === w.date
+                    ? `<button class="btn danger small" data-act="del-weight" data-date="${w.date}">Xoá?</button>`
+                    : `<button class="icon-btn small" data-act="arm-delete" data-date="${w.date}" aria-label="Xoá ngày ${ddmm(w.date)}">${ICONS.close}</button>`}</td></tr>`;
               })
               .join('')}
-          </tbody></table>
+          </tbody></table></div>
           ${ws.length > HISTORY_LIMIT ? `<button class="btn ghost small full" data-act="history">${showAllHistory ? 'Thu gọn' : `Xem tất cả ${ws.length} lần cân`}</button>` : ''}`
           : '<p class="muted">Chưa có dữ liệu.</p>'
       }
@@ -387,11 +417,29 @@ function renderWeight() {
 
     <section class="card backup">
       <h2>Sao lưu dữ liệu</h2>
-      <p class="muted">Dữ liệu chỉ lưu trong trình duyệt của máy này. Thỉnh thoảng xuất file sao lưu để không bị mất khi xoá lịch sử duyệt web hoặc đổi máy.</p>
+      <p class="muted">Dữ liệu chỉ lưu trong trình duyệt của máy này. Thỉnh thoảng hãy sao lưu để không mất dữ liệu khi xoá lịch sử duyệt web hoặc đổi máy.</p>
       <div class="row">
-        <button class="btn ghost" data-act="export">⬇ Xuất file</button>
-        <label class="btn ghost">⬆ Nhập file<input type="file" accept="application/json" data-act="import" hidden></label>
+        <button class="btn ghost" data-act="export">${ICONS.download}Sao lưu</button>
+        <label class="btn ghost" for="import-file">${ICONS.upload}Nhập từ file</label>
+        <input id="import-file" type="file" accept="application/json,.json" data-act="import" hidden>
       </div>
+      ${
+        backupOpen
+          ? `<div class="backup-panel">
+              <p class="small muted">${CAN_DOWNLOAD ? 'Bấm <b>Tải file</b> để lưu về máy. Nếu trình duyệt không cho tải, bấm <b>Sao chép</b> rồi dán vào ghi chú hoặc gửi cho chính mình.' : 'Bấm <b>Sao chép</b> rồi dán vào ghi chú hoặc gửi cho chính mình. Khi cần khôi phục, lưu đoạn này thành file .json rồi chọn Nhập từ file.'}</p>
+              <textarea id="backup-text" readonly rows="4">${esc(JSON.stringify(state))}</textarea>
+              <div class="row">${CAN_DOWNLOAD ? `<button class="btn small" data-act="download">${ICONS.download}Tải file</button>` : ''}<button class="btn ${CAN_DOWNLOAD ? 'ghost ' : ''}small" data-act="copy">${ICONS.copy}Sao chép</button></div>
+            </div>`
+          : ''
+      }
+      ${
+        pendingImport
+          ? `<div class="backup-panel confirm">
+              <p>File có <b>${pendingImport.weights.length}</b> lần cân. Thay toàn bộ dữ liệu hiện tại bằng file này?</p>
+              <div class="row"><button class="btn danger small" data-act="import-yes">Thay dữ liệu</button><button class="btn ghost small" data-act="import-no">Huỷ</button></div>
+            </div>`
+          : ''
+      }
     </section>
   `;
   paintChart();
@@ -417,8 +465,8 @@ window.addEventListener('resize', () => {
 // ---------- Tab: Món ăn ----------
 function renderDishes() {
   view.innerHTML = `
-    <section class="day-head solo"><div class="day-title"><h1>Món ăn</h1>
-      <p>Tắt món bạn không thích — thực đơn sẽ tự xếp lại. Món vừa ăn sẽ được "nghỉ" vài ngày rồi mới quay lại.</p></div></section>
+    <section class="page-head"><div><p class="eyebrow">${DISHES.length - state.disabled.length} món đang dùng</p><h1>Món ăn</h1>
+      <p class="lede">Tắt món bạn không thích, thực đơn sẽ tự xếp lại. Món vừa ăn sẽ nghỉ vài ngày rồi mới quay lại.</p></div></section>
     ${Object.entries(POOLS)
       .map(([poolId, pool]) => {
         const dishes = DISHES.filter((d) => d.pool === poolId);
@@ -426,7 +474,7 @@ function renderDishes() {
         const perDay = SLOTS.filter((s) => s.pool === poolId).length;
         const rest = Math.max(1, Math.floor(cooldownFor(on) / perDay));
         return `
-        <section class="card pool">
+        <section class="card pool pool-${poolId}">
           <div class="pool-head"><h2>${esc(pool.name)}</h2><span class="muted small">${on}/${dishes.length} món · lặp lại sau ≥ ${rest} ngày</span></div>
           <ul class="dish-list">
             ${dishes
@@ -436,7 +484,7 @@ function renderDishes() {
                   <div class="dish-row">
                     <span class="emoji" aria-hidden="true">${d.emoji}</span>
                     <div class="dish-info"><b>${esc(d.name)}</b><p class="meta">${dishMeta(d)}</p></div>
-                    <label class="switch" title="${enabled ? 'Đang dùng' : 'Đã tắt'}"><input type="checkbox" data-act="toggle-dish" data-id="${d.id}" ${enabled ? 'checked' : ''} aria-label="Dùng món ${esc(d.name)}"><span></span></label>
+                    <label class="switch" title="${enabled ? 'Đang dùng' : 'Đã tắt'}"><input type="checkbox" id="dish-${d.id}" data-act="toggle-dish" data-id="${d.id}" ${enabled ? 'checked' : ''} aria-label="Dùng món ${esc(d.name)}"><span></span></label>
                   </div>
                   <details><summary>${d.outside ? 'Ghi chú' : 'Cách làm'}</summary><div class="recipe">${recipeHtml(d)}</div></details>
                 </li>`;
@@ -460,7 +508,7 @@ function openSwap(slotId) {
   swapCtx = { slotId, key: selectedDay };
   dialog.innerHTML = `
     <form method="dialog" class="swap">
-      <div class="swap-head"><h2>Đổi ${esc(slot.name.toLowerCase())}</h2><button class="icon-btn" value="cancel" aria-label="Đóng">✕</button></div>
+      <div class="swap-head"><h2>Đổi ${esc(slot.name.toLowerCase())}</h2><button class="icon-btn" value="cancel" aria-label="Đóng">${ICONS.close}</button></div>
       <p class="muted small">${ddmmyyyy(selectedDay)} · đang là: ${current.dish ? esc(current.dish.name) : '—'}</p>
       <ul class="swap-list">
         ${options
@@ -514,18 +562,50 @@ view.addEventListener('click', (e) => {
   } else if (act === 'history') {
     showAllHistory = !showAllHistory;
     render();
+  } else if (act === 'arm-delete') {
+    const date = el.dataset.date;
+    armedDelete = date;
+    render();
+    setTimeout(() => {
+      if (armedDelete === date) {
+        armedDelete = null;
+        if (currentTab() === 'weight') render();
+      }
+    }, 4000);
   } else if (act === 'del-weight') {
-    if (!confirm(`Xoá cân nặng ngày ${ddmmyyyy(el.dataset.date)}?`)) return;
     state.weights = state.weights.filter((w) => w.date !== el.dataset.date);
+    armedDelete = null;
     save();
     render();
+    toast(`Đã xoá ngày ${ddmm(el.dataset.date)}`);
   } else if (act === 'export') {
+    backupOpen = !backupOpen;
+    render();
+  } else if (act === 'download') {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `tang-can-${todayKey()}.json`;
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } else if (act === 'copy') {
+    const ta = document.getElementById('backup-text');
+    const fallback = () => {
+      ta.select();
+      toast('Đã chọn sẵn, bấm giữ để sao chép');
+    };
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(ta.value).then(() => toast('Đã sao chép dữ liệu'), fallback);
+    else fallback();
+  } else if (act === 'import-yes') {
+    state = { ...structuredClone(DEFAULT_STATE), ...pendingImport };
+    pendingImport = null;
+    planner = null;
+    save();
+    render();
+    toast('Đã nhập dữ liệu');
+  } else if (act === 'import-no') {
+    pendingImport = null;
+    render();
   }
 });
 
@@ -566,14 +646,10 @@ view.addEventListener('change', (e) => {
       try {
         const data = JSON.parse(text);
         if (!Array.isArray(data.weights)) throw new Error();
-        if (!confirm('Thay toàn bộ dữ liệu hiện tại bằng file này?')) return;
-        state = { ...structuredClone(DEFAULT_STATE), ...data };
-        planner = null;
-        save();
+        pendingImport = data;
         render();
-        toast('Đã nhập dữ liệu');
       } catch {
-        toast('File không hợp lệ');
+        toast('File không đúng định dạng sao lưu');
       }
     });
   }
